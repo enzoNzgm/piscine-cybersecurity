@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+from PIL import Image
+import exifread
+import argparse
+import os
+
+
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp"}
+
+def display_exif_data(image_path):
+    """Affiche les données EXIF d'une image."""
+    with open(image_path, 'rb') as image_file:
+        tags = exifread.process_file(image_file)
+        if tags:
+            print("Données EXIF trouvées :")
+            for tag, value in tags.items():
+                print(f"{tag}: {value}")
+        else:
+            print("Aucune donnée EXIF trouvée.")
+
+def display_image_metadata(image_path):
+    """Affiche les métadonnées générales d'une image."""
+    with Image.open(image_path) as img:
+        print("\nMétadonnées de l'image :")
+        print(f"Format : {img.format}")
+        print(f"Mode : {img.mode}")
+        print(f"Taille : {img.size}")
+        print(f"Palette : {img.palette}")
+        print(f"Infos supplémentaires : {img.info}")
+
+
+def error(message):
+    print(f"./scorpion: error: {message}")
+    raise SystemExit(1)
+
+
+def has_allowed_extension(path):
+    _, extension = os.path.splitext(path.lower())
+    return extension in ALLOWED_EXTENSIONS
+
+def parse_args():
+    parser = argparse.ArgumentParser(prog="scorpion", add_help=True)
+    parser.add_argument("files", nargs="+", help="image file paths")
+    return parser.parse_args()
+    
+
+def main() :
+    args = parse_args()
+    for image_path in args.files:
+        if not os.path.isfile(image_path):
+            error(f"file not found: {image_path}")
+        if not has_allowed_extension(image_path):
+            error(
+                f"unsupported extension for '{image_path}' "
+                f"(allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))})"
+            )
+
+        print(f"\n===== {image_path} =====")
+        display_exif_data(image_path)
+        display_image_metadata(image_path)
+
+if "__main__" == __name__ :
+    main()

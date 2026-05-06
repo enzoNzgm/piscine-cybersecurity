@@ -1,0 +1,108 @@
+#!/usr/bin/python3
+import argparse
+import sys
+import time
+import hmac
+import hashlib
+
+
+def error(message):
+    print(f"./ft_otp: error: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def read_key_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            content = file.read().strip()
+    except OSError:
+        error("cannot read key file.")
+
+    if len(content) < 64 or any(c not in "0123456789abcdefABCDEF" for c in content):
+        error("key must be 64 hexadecimal characters.")
+
+    return content
+
+
+def xor_encrypt(data, key):
+    data_bytes = data.encode()
+    return bytes([b ^ key for b in data_bytes])
+
+
+def xor_decrypt(data, key):
+    return bytes([b ^ key for b in data]).decode()
+
+
+def save_generated_key(secret):
+    encryption_key = 42
+    encrypted = xor_encrypt(secret, encryption_key)
+    try:
+        with open("ft_otp.key", "wb") as file:
+            file.write(encrypted)
+    except OSError:
+        error("cannot write key file.")
+
+
+def read_key(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        error("cannot read key file.")
+
+def generate_otp(hex_key, counter):
+    try:
+        secret = bytes.fromhex(hex_key)
+    except ValueError:
+        error("invalid key format.")
+
+    counter_bytes = counter.to_bytes(8, byteorder="big")
+    hs = hmac.new(secret, counter_bytes, hashlib.sha1).digest()
+
+    offset = hs[19] & 0x0F
+    p = hs[offset:offset + 4]
+
+    bin_code = (
+        ((p[0] & 0x7F) << 24)
+        | ((p[1] & 0xFF) << 16)
+        | ((p[2] & 0xFF) << 8)
+        | (p[3] & 0xFF)
+    )
+
+    return bin_code % 1000000
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(prog="ft_otp", add_help=False)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("-g", dest="generate", metavar="KEYFILE for encrypt key")
+    group.add_argument("-k", dest="keyfile", metavar="FILE for generate the secret code")
+    parser.add_argument("-h", "--help", action="help",
+                        help="show this help message and exit")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    if args.generate:
+        secret = read_key_file(args.generate)
+        save_generated_key(secret)
+        print("Key was successfully saved in ft_otp.key.")
+        return
+
+    if args.keyfile:
+        encrypted = read_key(args.keyfile)
+        key = xor_decrypt(encrypted, 42)
+
+        if len(key) < 64 or any(c not in "0123456789abcdefABCDEF" for c in key):
+            error("invalid key.")
+
+        counter = int(time.time() / 30)
+        otp = generate_otp(key, counter)
+
+        print(f"{otp:06d}")
+
+
+if __name__ == "__main__":
+    main()
