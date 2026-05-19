@@ -26,7 +26,7 @@ int main(void)
     unsigned int step = 2;
 
     printf("Please enter key: ");
-    scan_result = scanf("%s", input);
+    scan_result = scanf("%23s", input);
 
     if (scan_result != 1) {
         no();
