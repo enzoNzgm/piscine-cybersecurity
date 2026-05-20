@@ -7,6 +7,7 @@ An encryption/decryption utility that encrypts files matching Wannacry-affected 
 ```bash
 make
 ```
+- Add your infection directory in the global variable
 
 ## Usage
 
@@ -17,18 +18,6 @@ make
 ./stockholm --help       # Show help
 ./stockholm --version    # Show version
 ```
-
-## Encryption Algorithm
-
-**Fernet (AES-128 in CBC mode)** - A secure, authenticated encryption method from the `cryptography` library.
-
-Key derivation uses **PBKDF2 with SHA256** (480,000 iterations) to strengthen passwords.
-
-### Why Fernet?
-- Industry-standard symmetric encryption
-- Built-in HMAC for authentication
-- Protection against tampering
-- Time-stamped ciphertexts
 
 ## File Extensions Targeted
 
@@ -41,5 +30,3 @@ Wannacry-affected extensions: .docx, .xlsx, .pptx, .pdf, .jpg, .png, .txt, .sql,
 - Generates secure random 16-character keys
 - Full error handling
 - Silent mode support
-
-
