@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+vaccine.json
+lab/venv/
+lab/shop.db

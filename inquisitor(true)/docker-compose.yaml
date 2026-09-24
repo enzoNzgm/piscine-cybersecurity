@@ -1,0 +1,76 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Inquisitor – test environment
+#
+#  Network topology (subnet 172.20.0.0/24):
+#    gateway  172.20.0.1   (acts as "gateway / source")
+#    victim   172.20.0.2   (FTP client)
+#    attacker 172.20.0.3   (runs inquisitor)
+#    ftpserver 172.20.0.4  (vsftpd)
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  inquisitor_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+          gateway: 172.20.0.254
+
+services:
+
+  # ── FTP server ──────────────────────────────────────────────────────────────
+  ftpserver:
+    build:
+      context: .
+      dockerfile: Dockerfile.ftpserver
+    container_name: ftpserver
+    hostname: ftpserver
+    networks:
+      inquisitor_net:
+        ipv4_address: 172.20.0.4
+    cap_add:
+      - NET_ADMIN
+
+  # ── Gateway (source) ────────────────────────────────────────────────────────
+  gateway:
+    image: alpine:3.19
+    container_name: gateway
+    hostname: gateway
+    command: sh -c "apk add --no-cache iptables && iptables -t nat -A POSTROUTING -j MASQUERADE && tail -f /dev/null"
+    networks:
+      inquisitor_net:
+        ipv4_address: 172.20.0.1
+    cap_add:
+      - NET_ADMIN
+
+  # ── Victim (FTP client) ─────────────────────────────────────────────────────
+  victim:
+    image: alpine:3.19
+    container_name: victim
+    hostname: victim
+    command: sh -c "apk add --no-cache lftp && tail -f /dev/null"
+    networks:
+      inquisitor_net:
+        ipv4_address: 172.20.0.2
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      - ftpserver
+
+  # ── Attacker (runs inquisitor) ──────────────────────────────────────────────
+  attacker:
+    build:
+      context: .
+      dockerfile: Dockerfile.attacker
+    container_name: attacker
+    hostname: attacker
+    networks:
+      inquisitor_net:
+        ipv4_address: 172.20.0.3
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    depends_on:
+      - gateway
+      - victim
+      - ftpserver

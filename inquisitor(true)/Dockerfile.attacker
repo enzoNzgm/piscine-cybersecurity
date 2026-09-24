@@ -1,0 +1,24 @@
+FROM python:3.11-slim
+
+LABEL description="Inquisitor attacker container"
+
+# System deps: libpcap, arping, iproute2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpcap-dev \
+        net-tools \
+        iproute2 \
+        iputils-arping \
+        arp-scan \
+    && pip install --no-cache-dir scapy \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY inquisitor.py .
+
+# Enable IP forwarding so intercepted packets are relayed
+RUN echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+
+CMD ["bash", "-c", \
+     "sysctl -w net.ipv4.ip_forward=1 2>/dev/null; \
+      echo '[attacker] ready — run: python3 inquisitor.py <IP-src> <MAC-src> <IP-target> <MAC-target>'; \
+      tail -f /dev/null"]

