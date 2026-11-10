@@ -8,6 +8,10 @@ __pycache__/
 *.pyc
 venv/
 
+# Compilé
+a.out
+*.o
+
 # Généré à l'exécution
 *.db
 vaccine/vaccine.json
