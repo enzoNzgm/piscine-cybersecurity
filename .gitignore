@@ -1,0 +1,16 @@
+# Notes perso / explications
+COMPRENDRE_*.txt
+FONCTIONNEMENT_*.txt
+FONCTIONNEMENT.md
+
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# Généré à l'exécution
+*.db
+vaccine/vaccine.json
+
+# Claude
+.claude/settings.local.json
